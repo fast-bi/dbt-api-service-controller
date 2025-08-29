@@ -1,0 +1,350 @@
+## Fast.BI Deployment 
+# Helm deployment values for Service.
+# Helm Chart name: {{ chart_name }}
+# Helm Chart repo: {{ chart_repo }}
+# Helm Chart version {{ chart_version }}
+
+nameOverride: "dbt-server-{{ k8s_name }}"
+namespace: "{{ namespace }}"
+image:
+  name: "dbt-server-{{ k8s_name }}"
+  tag: "{{ app_version }}"
+
+manifests:
+  # Service Account
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: dbt-server-{{ k8s_name }}
+      namespace: {{ namespace }}
+      labels:
+        app: fastbi-dbt-project-runner
+        dbt-project: {{ project_name }}
+{%- if cloud_provider == 'gcp' %}
+      annotations:
+        iam.gke.io/gcp-service-account: {{ service_account }}
+{%- endif %}
+
+  # Secret for DBT API Server
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: dbt-server-secret-{{ k8s_name }}
+      namespace: {{ namespace }}
+      labels:
+        app: fastbi-dbt-project-runner
+        dbt-project: {{ project_name }}
+    type: Opaque
+    stringData:
+      DATA_WAREHOUSE_PLATFORM: {{ datawarehouse_type }}
+      GITLINK_SECRET: {{ gitlink_secret }}
+      SECRET_DBT_PACKAGE_REPO_TOKEN: {{ secret_dbt_package_repo_token }}
+      SECRET_PACKAGE_REPO_TOKEN_NAME: {{ secret_package_repo_token_name }}
+      GITLINK_DEPLOY_KEY: {{ gitlink_deploy_key }}
+      DBT_REPO_NAME: {{ dbt_repo_name }}
+      BASIC_AUTH_PASSWORD: {{ basic_auth_password }}
+      BASIC_AUTH_USER: {{ basic_auth_user }}
+      BASIC_AUTH: |
+        {{ hashed_credentials }}
+
+  # ConfigMap for Nginx
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: dbt-server-{{ k8s_name }}-nginx-cm
+      namespace: {{ namespace }}
+    data:
+      default.conf: |
+        upstream backend {
+            server 127.0.0.1:8585;  # Use IPv4
+        }
+
+        server {
+            listen 8080;
+            server_name dbt-server-{{ k8s_name }}.{{ namespace }};
+
+            # Add timeout settings
+            proxy_connect_timeout 300s;
+            proxy_read_timeout 300s;
+            proxy_send_timeout 300s;
+
+            location / {
+                auth_basic           "DBT Server API Area";
+                auth_basic_user_file /etc/apache2/.htpasswd;
+                proxy_pass http://backend;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                
+                # Add health check bypass if needed
+                location /ready {
+                   auth_basic off;
+                   proxy_pass http://backend/ready;
+                }
+            }
+        }
+
+  # StatefulSet
+  - apiVersion: apps/v1
+    kind: StatefulSet
+    metadata:
+      name: dbt-server-{{ k8s_name }}
+      namespace: {{ namespace }}
+      labels:
+        dbt-project: {{ project_name }}
+        app: fastbi-dbt-project-runner
+    spec:
+      serviceName: dbt-server-{{ k8s_name }}
+      replicas: 1
+      selector:
+        matchLabels:
+          app: fastbi-dbt-project-runner
+          dbt-project: {{ project_name }}
+      template:
+        metadata:
+          labels:
+            app: fastbi-dbt-project-runner
+            dbt-project: {{ project_name }}
+        spec:
+          terminationGracePeriodSeconds: 5
+          serviceAccountName: dbt-server-{{ k8s_name }}
+          securityContext:
+            fsGroup: 0
+            runAsUser: 0
+            runAsGroup: 0
+          containers:
+            - name: dbt-server
+              image: "{{ repository }}{{ image }}:{{ tag }}"
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: true
+                privileged: true
+              ports:
+                - name: tcp
+                  containerPort: 8585
+                  protocol: TCP
+              readinessProbe:
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - "curl -s -X POST http://127.0.0.1:8585/ready -H 'Content-Type: application/json' -d '{}' | grep -q '{}'"
+                initialDelaySeconds: 30
+                periodSeconds: 10
+                timeoutSeconds: 5
+                successThreshold: 1
+                failureThreshold: 3
+              livenessProbe:
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - "curl -s -X POST http://127.0.0.1:8585/ready -H 'Content-Type: application/json' -d '{}' | grep -q '{}'"
+                initialDelaySeconds: 60
+                periodSeconds: 20
+                timeoutSeconds: 5
+                successThreshold: 1
+                failureThreshold: 3
+              startupProbe:
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - "curl -s -X POST http://127.0.0.1:8585/ready -H 'Content-Type: application/json' -d '{}' | grep -q '{}'"
+                initialDelaySeconds: 30
+                periodSeconds: 10
+                timeoutSeconds: 5
+                successThreshold: 1
+                failureThreshold: 12
+              env:
+                - name: DBT_PROJECT_NAME
+                  value: {{ project_name }}
+                - name: DBT_REPO_NAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: dbt-server-secret-{{ k8s_name }}
+                      key: DBT_REPO_NAME
+{%- if git_branch != 'main' %}
+                - name: GIT_BRANCH
+                  value: {{ git_branch }}
+{%- endif %}
+                - name: GITLINK_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: dbt-server-secret-{{ k8s_name }}
+                      key: GITLINK_SECRET
+                - name: GITLINK_DEPLOY_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: dbt-server-secret-{{ k8s_name }}
+                      key: GITLINK_DEPLOY_KEY
+                - name: SECRET_DBT_PACKAGE_REPO_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: dbt-server-secret-{{ k8s_name }}
+                      key: SECRET_DBT_PACKAGE_REPO_TOKEN
+                - name: SECRET_PACKAGE_REPO_TOKEN_NAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: dbt-server-secret-{{ k8s_name }}
+                      key: SECRET_PACKAGE_REPO_TOKEN_NAME
+                - name: DATA_WAREHOUSE_PLATFORM
+                  valueFrom:
+                    secretKeyRef:
+                      name: dbt-server-secret-{{ k8s_name }}
+                      key: DATA_WAREHOUSE_PLATFORM
+                - name: DBT_SERVER_WORKER_NUM
+                  value: "{{ worker_num | default('10') }}"
+                - name: DBT_SERVER_MAX_REQUESTS
+                  value: "{{ max_requests | default('35') }}"
+                - name: DBT_SERVER_ENABLE_DDTRACE
+                  value: "{{ enable_ddtrace | default('false') }}"
+                - name: DEBUG
+                  value: "{{ debug | default('false') }}"
+                - name: CELERYD_LOG_LEVEL
+                  value: "{{ celery_log_level | default('ERROR') }}"
+                - name: {{ cicd_env_key }}
+                  value: "{{ cicd_env_value }}"
+                - name: APP_VERSION
+                  value: "v.{{ app_version }}"
+              resources:
+                requests:
+                  cpu: {{ cpu_request | default('1500m') }}
+                  memory: {{ memory_request | default('2Gi') }}
+                limits:
+                  cpu: {{ cpu_limit | default('3500m') }}
+                  memory: {{ memory_limit | default('6Gi') }}
+              volumeMounts:
+                - mountPath: /data
+                  name: dbt-server-{{ k8s_name }}
+                - mountPath: /usr/src/app/working-dir
+                  name: dbt-server-{{ k8s_name }}
+{%- if datawarehouse_type == 'snowflake' %}
+                - name: snowsql-secrets
+                  mountPath: /snowsql/secrets
+{%- endif %}
+{%- if datawarehouse_type == 'bigquery' %}
+                - name: bigquery-secrets
+                  mountPath: /usr/src/secret
+{%- endif %}
+{%- if datawarehouse_type %}
+                - name: dw-secrets-{{ k8s_name }}
+                  mountPath: /fastbi/secrets
+{%- endif %}
+            - name: dbt-server-nginx-proxy
+              image: nginx:stable-bullseye
+              ports:
+                - name: tcp
+                  containerPort: 8080
+                  protocol: TCP
+              volumeMounts:
+                - mountPath: /etc/nginx/conf.d/default.conf
+                  subPath: default.conf
+                  name: dbt-server-nginx-proxy-cm
+                - name: dbt-server-secret-{{ k8s_name }}
+                  readOnly: true
+                  mountPath: "/etc/apache2/"
+          volumes:
+            - name: dbt-server-temp
+              emptyDir: {}
+{%- if datawarehouse_type == 'snowflake' %}
+            - name: snowsql-secrets
+              emptyDir: {}
+              readOnly: false
+{%- endif %}
+{%- if datawarehouse_type == 'bigquery' %}
+            - name: bigquery-secrets
+              emptyDir: {}
+              readOnly: false
+{%- endif %}
+            - name: dbt-server-nginx-proxy-cm
+              configMap:
+                name: dbt-server-{{ k8s_name }}-nginx-cm
+            - name: dbt-server-secret-{{ k8s_name }}
+              secret:
+                secretName: dbt-server-secret-{{ k8s_name }}
+                items:
+                - key: BASIC_AUTH
+                  path: .htpasswd
+{%- if datawarehouse_type == 'bigquery' %}
+            - name: dw-secrets-{{ k8s_name }}
+              secret:
+                secretName: data-warehouse-bigquery-secrets
+{%- endif %}
+{%- if datawarehouse_type == 'snowflake' %}
+            - name: dw-secrets-{{ k8s_name }}
+              secret:
+                secretName: data-warehouse-snowflake-secrets
+{%- endif %}
+{%- if datawarehouse_type == 'redshift' %}
+            - name: dw-secrets-{{ k8s_name }}
+              secret:
+                secretName: data-warehouse-redshift-secrets
+{%- endif %}
+{%- if datawarehouse_type == 'fabric' %}
+            - name: dw-secrets-{{ k8s_name }}
+              secret:
+                secretName: data-warehouse-fabric-secrets
+{%- endif %}
+      volumeClaimTemplates:
+        - metadata:
+            name: dbt-server-{{ k8s_name }}
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: {{ storage_size | default('1Gi') }}
+
+  # Service
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: dbt-server-{{ k8s_name }}
+      namespace: {{ namespace }}
+      labels:
+        dbt-project: {{ project_name }}
+        app: fastbi-dbt-project-runner
+    spec:
+      selector:
+        app: fastbi-dbt-project-runner
+        dbt-project: {{ project_name }}
+      type: ClusterIP
+      ports:
+        - port: 80
+          protocol: TCP
+          name: http
+          targetPort: 8080
+{%- if https_enabled %}
+  # Ingress
+  - apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: dbt-server-{{ k8s_name }}
+      namespace: {{ namespace }}
+      labels:
+        app.kubernetes.io/name: dbt-server-{{ k8s_name }}
+        dbt-project: {{ project_name }}
+        app: fastbi-dbt-project-runner
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: dbt-server-{{ k8s_name }}.{{ customer }}.{{ domain }}
+        traefik.ingress.kubernetes.io/router.middlewares: traefik-ingress-redirect-https@kubernetescrd
+        cert-manager.io/cluster-issuer: "lets-encrypt-issuer"
+    spec:
+      ingressClassName: traefik
+      tls:
+        - hosts:
+          - dbt-server-{{ k8s_name }}.{{ customer }}.{{ domain }}
+          secretName: dbt-server-tls-{{ k8s_name }}
+      rules:
+        - host: dbt-server-{{ k8s_name }}.{{ customer }}.{{ domain }}
+          http:
+            paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: dbt-server-{{ k8s_name }}
+                    port:
+                      number: 80 
+{% endif %}
