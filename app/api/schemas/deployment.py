@@ -192,21 +192,21 @@ class DeploymentCreateSchema(Schema):
     repository = fields.String(
         required=False,
         validate=validate.Length(min=1, max=255),
-        load_default='europe-central2-docker.pkg.dev/fast-bi-common/bi-platform/',
+        load_default='4fastbi',
         metadata={
             'title': 'Container Image Repository',
             'description': 'The container image repository to use for the deployment.',
-            'example': 'europe-central2-docker.pkg.dev/fast-bi-common/bi-platform/'
+            'example': '4fastbi'
         }
     )
     image = fields.String(
         required=False,
         validate=validate.Length(min=1, max=255),
-        load_default='tsb-dbt-core-api-server',
+        load_default='dbt-api-server-core',
         metadata={
             'title': 'Container Image Name',
             'description': 'The container image name to use for the deployment.',
-            'example': 'tsb-dbt-core-api-server'
+            'example': 'dbt-api-server-core'
         }
     )
     tag = fields.String(

@@ -162,8 +162,8 @@ def render_values_file(data, chart_path):
         'hashed_credentials': data.get('hashed_credentials', ''),
 
         # Image configuration
-        'repository': data.get('repository', 'europe-central2-docker.pkg.dev/fast-bi-common/bi-platform/'),
-        'image': data.get('image', 'tsb-dbt-core-api-server'),
+        'repository': data.get('repository', '4fastbi'),
+        'image': data.get('image', 'dbt-api-server-core'),
         'tag': data.get('tag', 'latest'),
 
         # Server configuration
