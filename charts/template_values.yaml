@@ -115,7 +115,7 @@ manifests:
             runAsGroup: 0
           containers:
             - name: dbt-server
-              image: "{{ repository }}{{ image }}:{{ tag }}"
+              image: "{{ repository }}/{{ image }}:{{ tag }}"
               imagePullPolicy: IfNotPresent
               securityContext:
                 allowPrivilegeEscalation: true
