@@ -225,15 +225,20 @@ def get_helm_status(release_name, namespace):
             return None
             
         current_app.logger.info(f"Checking helm status for release {release_name} in namespace {namespace}")
-        result = subprocess.run(
-            ['helm', 'status', release_name, '-n', namespace],
-            capture_output=True,
-            text=True
-        )
-        if result.returncode != 0:
-            current_app.logger.error(f"Error getting Helm status: {result.stderr}")
+        try:
+            result = subprocess.run(
+                ['helm', 'status', release_name, '-n', namespace],
+                capture_output=True,
+                text=True,
+                timeout=60  # 60 seconds should be enough for status check
+            )
+            if result.returncode != 0:
+                current_app.logger.error(f"Error getting Helm status: {result.stderr}")
+                return None
+            return result.stdout
+        except subprocess.TimeoutExpired:
+            current_app.logger.warning(f"Helm status check timed out for {release_name}")
             return None
-        return result.stdout
     except Exception as e:
         current_app.logger.error(f"Error getting Helm status: {str(e)}")
         return None
@@ -281,21 +286,31 @@ def deploy_dbt_server(json_data):
             }, 500
 
         # Use k8s_name for release
+        # Set timeout to 30 minutes (1800 seconds) to allow for cluster scaling
         cmd = [
             'helm', 'upgrade', '-i', release_name, f'{repo_name}/raw',
             '--version', Config.HELM_CHART_VERSION,
             '--namespace', json_data['namespace'],
             '--wait',
+            '--timeout', '30m',
             '--values', str(values_file)
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            current_app.logger.error(f"Helm deployment failed: {result.stderr}")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+            if result.returncode != 0:
+                current_app.logger.error(f"Helm deployment failed: {result.stderr}")
+                return {
+                    'status': 'error',
+                    'message': 'Failed to deploy application',
+                    'details': {'error': result.stderr}
+                }, 500
+        except subprocess.TimeoutExpired:
+            current_app.logger.error(f"Helm deployment timed out after 30 minutes")
             return {
                 'status': 'error',
-                'message': 'Failed to deploy application',
-                'details': {'error': result.stderr}
-            }, 500
+                'message': 'Helm deployment timed out after 30 minutes. The deployment may still be in progress. Please check the cluster status.',
+                'details': {'error': 'Deployment timeout - cluster may be scaling up. Check deployment status manually.'}
+            }, 504
 
         # Airflow connection
         current_app.logger.info("Attempting to create/update Airflow connection")

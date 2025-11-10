@@ -41,4 +41,5 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 6798
 
 # Run the application with Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:6798", "--workers", "4", "--timeout", "120", "app:create_app()"] 
+# Set timeout to 30 minutes (1800 seconds) to allow for long-running Helm deployments
+CMD ["gunicorn", "--bind", "0.0.0.0:6798", "--workers", "4", "--timeout", "1800", "app:create_app()"] 
